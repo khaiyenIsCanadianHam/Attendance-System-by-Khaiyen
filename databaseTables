@@ -1,0 +1,7 @@
+-- Legacy instructions were malformed and included insecure default credentials.
+-- Create an empty PostgreSQL database as your database administrator, set
+-- DATABASE_URL securely, then run:
+--   .venv/bin/flask --app server init-db
+-- Existing legacy databases: back up first, then run:
+--   .venv/bin/flask --app server migrate-legacy --timezone Asia/Manila --yes
+-- See README.md for full instructions. Do not run the original SQL file.

@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Teacher Login</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"></head>
+<body><main class="container"><h1>Teacher Login</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="POST" action="{{ url_for('login') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label for="username">Username</label><input id="username" name="username" autocomplete="username" maxlength="100" required>
+<label for="password">Password</label><input id="password" type="password" name="password" autocomplete="current-password" maxlength="256" required>
+<button type="submit">Login</button></form><p>Teacher accounts are provisioned by the system operator.</p></main></body></html>

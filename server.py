@@ -270,6 +270,22 @@ def records():
     return result
 
 
+@app.get("/sync_status")
+def sync_status():
+    from sync_worker import read_status
+
+    data = read_status()
+    data.pop("source", None)
+    with transaction() as cur:
+        cur.execute("SELECT COUNT(*) FROM students")
+        data["students"] = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COUNT(*) FROM registration_requests WHERE status=%s", ("pending",)
+        )
+        data["pending"] = cur.fetchone()[0]
+    return jsonify(data)
+
+
 @app.get("/get_attendance")
 def get_attendance():
     return jsonify(records())
@@ -297,7 +313,7 @@ def export_csv():
     return Response(
         output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=attendance.csv"},
+        headers={"Content-Disposition": "attachment; filename=hanami-attendance.csv"},
     )
 
 
@@ -371,4 +387,12 @@ def reset_teacher_password(username, password):
 
 
 if __name__ == "__main__":
+    init_db()
+    if os.environ.get("STUDENT_SHEET_URL"):
+        import threading
+        from sync_worker import run_worker
+
+        threading.Thread(
+            target=run_worker, daemon=True, name="hanami-roster-sync"
+        ).start()
     app.run(host="127.0.0.1", port=5000, debug=False)

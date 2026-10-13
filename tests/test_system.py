@@ -83,7 +83,7 @@ class SystemTests(unittest.TestCase):
         for path in ("/scan", "/timeout", "/timeout_all", "/save_attendance"):
             with self.subTest(path=path):
                 self.assertEqual(self.post(path).status_code, 401)
-        for path in ("/get_attendance", "/export_csv"):
+        for path in ("/get_attendance", "/export_csv", "/sync_status"):
             self.assertEqual(self.client.get(path).status_code, 401)
         self.assertEqual(self.client.get("/dashboard").status_code, 302)
 
@@ -428,6 +428,102 @@ class SystemTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Roster too large"):
                 run_sync(google_forms=True)
         self.assertEqual(len(get_all_students()), 1)
+
+    def test_automatic_registration_stores_pending_without_enrolling(self):
+        text = "Email Address,full_name,section,lrn,approved\npending@example.test,Pending,A,012345678901,FALSE\n"
+        self.assertEqual(import_csv(text, google_forms=True, collect_pending=True), 0)
+        self.assertEqual(len(get_all_students()), 1)
+        with transaction() as cur:
+            cur.execute("SELECT lrn,status FROM registration_requests")
+            self.assertEqual(cur.fetchall(), [("012345678901", "pending")])
+        self.assertEqual(
+            import_csv(
+                text.replace("FALSE", "TRUE"), google_forms=True, collect_pending=True
+            ),
+            1,
+        )
+        with transaction() as cur:
+            cur.execute("SELECT status FROM registration_requests")
+            self.assertEqual(cur.fetchone()[0], "approved")
+        self.assertEqual(len(get_all_students()), 2)
+
+    def test_sync_worker_generates_missing_qr_and_retries_failed_requests(self):
+        from unittest.mock import patch
+        import sync_worker
+        from config import INSTANCE
+
+        text = "Email Address,full_name,section,lrn,approved\nnew@example.test,New,A,012345678901,TRUE\n"
+
+        def download(**kwargs):
+            return import_csv(text, **kwargs)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "STUDENT_SHEET_URL": "https://docs.google.com/spreadsheets/d/test/export?format=csv"
+                },
+            ),
+            patch("sync_worker.run_sync", side_effect=download),
+        ):
+            first = sync_worker.sync_once()
+            self.assertEqual(first["imported"], 1)
+            self.assertTrue((INSTANCE / "qrcodes" / "012345678901.png").exists())
+            second = sync_worker.sync_once()
+            self.assertEqual(second["imported"], 0)
+            self.assertEqual(second["generated"], 0)
+            with patch(
+                "sync_worker.run_sync", side_effect=ValueError("PRIVATE_URL_OR_DATA")
+            ):
+                with self.assertRaises(ValueError):
+                    sync_worker.sync_once()
+            status = sync_worker.read_status()
+            self.assertEqual(status["state"], "error")
+            self.assertEqual(status["last_success"], second["last_success"])
+            self.assertNotIn("PRIVATE_URL_OR_DATA", json.dumps(status))
+
+    def test_sync_status_is_teacher_only_and_shows_counts(self):
+        self.assertEqual(self.client.get("/sync_status").status_code, 401)
+        self.login()
+        response = self.client.get("/sync_status", base_url="https://localhost")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["students"], 1)
+        self.assertNotIn("source", response.json)
+
+    def test_worker_continues_after_failure_and_uses_poll_interval(self):
+        from unittest.mock import patch, MagicMock
+        from sync_worker import run_worker
+
+        stop = MagicMock()
+        stop.is_set.side_effect = [False, False, True]
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "STUDENT_SHEET_URL": "https://docs.google.com/spreadsheets/d/test/export?format=csv",
+                    "STUDENT_SYNC_INTERVAL": "30",
+                },
+            ),
+            patch(
+                "sync_worker.sync_once", side_effect=[ValueError("failure"), {}]
+            ) as sync,
+            self.assertLogs("hanami.sync", level="WARNING"),
+        ):
+            run_worker(stop)
+        self.assertEqual(sync.call_count, 2)
+        self.assertEqual(
+            [call.args for call in stop.wait.call_args_list], [(30,), (30,)]
+        )
+
+    def test_worker_singleton_and_recovery_after_release(self):
+        from sync_worker import worker_lock
+
+        with worker_lock():
+            with self.assertRaises(OSError):
+                with worker_lock():
+                    pass
+        with worker_lock():
+            pass
 
     def test_qr_image_and_private_keys(self):
         path = Path(generate_qr(self.student))

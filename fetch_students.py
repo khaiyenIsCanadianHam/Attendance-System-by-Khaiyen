@@ -6,12 +6,12 @@ import io
 import os
 from urllib.parse import urlsplit
 import requests
-from db import insert_student, validate_student
+from db import insert_student, validate_student, record_registration_requests
 
 FIELDS = ("full_name", "section", "lrn", "email")
 
 
-def import_csv(text, *, google_forms=False):
+def import_csv(text, *, google_forms=False, collect_pending=False):
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise ValueError("CSV requires a header row")
@@ -31,6 +31,7 @@ def import_csv(text, *, google_forms=False):
     rows = list(reader)
     if len(rows) > 10000:
         raise ValueError("Roster too large")
+    registrations = []
     if google_forms:
         approved = []
         for row in rows:
@@ -39,16 +40,24 @@ def import_csv(text, *, google_forms=False):
                 raise ValueError(
                     "Approval must be TRUE, FALSE, or empty; use teacher-only checkboxes"
                 )
-            if status != "true":
-                continue
-            approved.append(
-                {
-                    "full_name": row.get(headers["full_name"]),
-                    "section": row.get(headers["section"]),
-                    "lrn": row.get(headers["lrn"]),
-                    "email": row.get(headers["email address"]),
-                }
-            )
+            record = {
+                "full_name": row.get(headers["full_name"]),
+                "section": row.get(headers["section"]),
+                "lrn": row.get(headers["lrn"]),
+                "email": row.get(headers["email address"]),
+            }
+            if status == "true":
+                approved.append(record)
+            if collect_pending:
+                try:
+                    validate_student(*(record[key] for key in FIELDS))
+                except ValueError:
+                    if status == "true":
+                        raise
+                    continue
+                registrations.append(
+                    dict(record, status="approved" if status == "true" else "pending")
+                )
         rows = approved
         identities = {}
         for row in rows:
@@ -60,10 +69,12 @@ def import_csv(text, *, google_forms=False):
     # Validate every approved record before inserting any student.
     for row in rows:
         validate_student(*(row[k] for k in FIELDS))
+    if collect_pending:
+        record_registration_requests(registrations)
     return sum(insert_student(*(row[k] for k in FIELDS)) for row in rows)
 
 
-def run_sync(*, google_forms=False):
+def run_sync(*, google_forms=False, collect_pending=False):
     url = os.environ.get("STUDENT_SHEET_URL", "")
     if urlsplit(url).scheme != "https" or urlsplit(url).hostname != "docs.google.com":
         raise ValueError(
@@ -81,7 +92,7 @@ def run_sync(*, google_forms=False):
             if len(content) > 2_000_000:
                 raise ValueError("Roster too large")
         text = content.decode("utf-8-sig")
-    return import_csv(text, google_forms=google_forms)
+    return import_csv(text, google_forms=google_forms, collect_pending=collect_pending)
 
 
 if __name__ == "__main__":

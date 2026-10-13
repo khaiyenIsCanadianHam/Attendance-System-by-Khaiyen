@@ -6,7 +6,7 @@
 function createAttendanceRegistrationForm() {
   // Replace these options with your school's actual sections before running.
   const sections = ['Section A', 'Section B'];
-  const form = FormApp.create('Student Registration for Attendance');
+  const form = FormApp.create('Hanami · Student QR Registration');
   form.setDescription(
     'Register for the school attendance system. Provide your official school details. ' +
     'Your teacher will review your submission before issuing your QR code. ' +
@@ -40,7 +40,7 @@ function createAttendanceRegistrationForm() {
       .build())
     .setRequired(true);
 
-  const spreadsheet = SpreadsheetApp.create('Attendance Registration Responses');
+  const spreadsheet = SpreadsheetApp.create('Hanami Registration Responses');
   form.setDestination(FormApp.DestinationType.SPREADSHEET, spreadsheet.getId());
 
   // The approval column belongs in the private Sheet, never as a form question.

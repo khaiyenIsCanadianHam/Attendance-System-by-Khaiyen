@@ -17,7 +17,7 @@ def send_qr(email, qr_path, student_name):
         )
     message = EmailMessage()
     message["From"], message["To"] = user, email
-    message["Subject"] = "Your Attendance QR Code"
+    message["Subject"] = "Your Hanami QR Code"
     message.set_content(
         f"Hello {student_name},\n\nPresent the attached QR to your teacher. Do not share it."
     )

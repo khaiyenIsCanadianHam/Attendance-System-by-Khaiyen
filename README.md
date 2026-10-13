@@ -1,6 +1,6 @@
-# Attendance System
+# Hanami
 
-A teacher-operated web application for recording student attendance with QR codes.
+Hanami is a teacher-operated web application for recording student attendance with QR codes.
 Teachers can check students in, record time-outs, monitor active attendance, and
 export attendance reports. The application uses Flask and runs with SQLite by
 default; PostgreSQL is available for deployments that need a separate database.
@@ -24,7 +24,8 @@ default; PostgreSQL is available for deployments that need a separate database.
 | Feature | What it does |
 | --- | --- |
 | Teacher login | Restricts the dashboard, attendance actions, and reports to provisioned teachers. |
-| Google Forms registration | Collects student details into Google Sheets, with a reusable form template and teacher approval before import. |
+| Google Forms registration | Collects student details in Google Sheets and automatically stores valid pending submissions in Hanami. |
+| Automatic roster sync | Polls every 30 seconds, enrolls approved submissions, and generates their QR images. |
 | Roster import | Imports approved student records from CSV, validates all rows first, and skips existing LRNs. |
 | QR generation | Creates a private QR image for each student without embedding their personal details. |
 | Camera scanning | Checks a student in after the server verifies their QR credential against the roster. |
@@ -161,7 +162,7 @@ to a public repository. QR generation does not send email automatically.
 **Linux/macOS:**
 
 ```bash
-ATTENDANCE_LOCAL_HTTP=1 python -m gunicorn --workers 2 --bind 127.0.0.1:5000 server:app
+ATTENDANCE_LOCAL_HTTP=1 bash scripts/start.sh
 ```
 
 **Windows PowerShell:**
@@ -185,7 +186,7 @@ python scripts/smoke.py
 
 This checks the running login form, local browser scripts, and that attendance and
 report endpoints reject unauthenticated requests. Then use the dashboard's
-**Start Scanner** button and allow camera access. Verify the student's identity
+**Start scanner** button and allow camera access. Verify the student's identity
 before scanning their QR.
 
 On Linux/macOS, `bash scripts/setup.sh` is a shortcut for dependency installation
@@ -196,8 +197,7 @@ starts the local server after setup.
 
 The collection flow is:
 
-**Student submits Google Form → response arrives in Google Sheets → teacher verifies
-and approves it → program imports approved rows → operator generates/distributes QR codes.**
+**Google Form → Google Sheet → automatic pending registration → teacher approval → active roster and QR image.**
 
 Form submissions register student details; they do not record attendance or create
 teacher accounts. Google Forms and the Sheet CSV export require no paid API setup,
@@ -322,7 +322,7 @@ $env:STUDENT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/
 python fetch_students.py --google-forms
 ```
 
-The program downloads the CSV using HTTPS, reads the collected Email Address,
+The manual command downloads the CSV using HTTPS, reads the collected Email Address,
 ignores unapproved responses, validates all approved rows, and inserts new students.
 The `--google-forms` flag is required for the Forms headers and approval handling.
 A missing approval column or an ambiguous approval value causes import to refuse.
@@ -339,34 +339,76 @@ To use a downloaded response CSV instead, run:
 python fetch_students.py responses.csv --google-forms
 ```
 
-### 7. Issue QR codes and repeat when new students register
+### 7. Enable automatic registration sync
+
+Keep `STUDENT_SHEET_URL` configured in the same shell as your server and start Hanami:
+
+**Linux/macOS:**
 
 ```bash
-python qr_generator.py
+ATTENDANCE_LOCAL_HTTP=1 bash scripts/start.sh
 ```
 
-Distribute the private QR images from `.instance/qrcodes/`, or configure SMTP and
-explicitly run `python app.py --send-email`. Re-run the Forms import after teachers
-approve new submissions, then generate their QR codes. The web server does not
-poll the Sheet automatically. Unchecking a previously imported row does not delete
-a student or revoke an issued QR; handle revocation explicitly with
-`python qr_generator.py --rotate LRN` when a code must be replaced.
+**Windows PowerShell:**
+
+```powershell
+$env:ATTENDANCE_LOCAL_HTTP = "1"
+python server.py
+```
+
+When a Sheet URL is configured, these startup commands automatically start one
+polling worker. It fetches immediately, then checks every **30 seconds** by default.
+Set `STUDENT_SYNC_INTERVAL` to 10–3600 seconds to adjust the interval. Keep Hanami
+running for automatic updates. If you start Gunicorn directly instead of using the
+startup script, run `python sync_worker.py` in a separate supervised process.
+
+On each successful poll:
+
+1. Valid new submissions are saved to the private `registration_requests` database
+   table as **pending**; they cannot record attendance and receive no QR yet.
+2. Teacher-approved TRUE rows are enrolled in the active student roster. Existing
+   LRNs are preserved rather than overwritten by a new form submission.
+3. Missing or outdated QR images are generated automatically in `.instance/qrcodes/`.
+4. The dashboard shows enrolled/pending counts and the last successful sync time.
+
+There is no Google API payment or webhook involved. Updates occur on the next poll,
+subject to Google publishing the latest CSV data and network availability; this is
+not an instantaneous submission notification. Failures preserve the database and
+last successful status, show a sync error, and retry on the next cycle. Pending
+records with invalid details are not stored; invalid approved records block import
+until the teacher corrects them. Conflicting approved identities are also rejected.
+
+Share the generated QR images privately, or configure SMTP and explicitly run
+`python app.py --send-email`. Sync does **not** automatically email the entire roster.
+Unchecking a previously enrolled row does not delete the student or revoke their
+QR. Use `python qr_generator.py --rotate LRN` to replace a copied/lost code.
+The pending table retains observed requests; deleting a Sheet row does not erase
+its stored request. Apply your school's retention policy through an authorized
+operator, with appropriate backups.
+
+The standard startup commands initialize the additive registration tables automatically,
+preserving existing data. With a custom Gunicorn startup, run
+`python -m flask --app server init-db` once after upgrading. Use the
+legacy migration procedure if you still have the archive-era PostgreSQL schema.
 
 ## Daily use
 
 1. Start the server and log in as a teacher.
-2. Select **Start Scanner** and allow the browser to use the camera.
+2. Select **Start scanner** and allow the browser to use the camera.
 3. Verify each student's identity, then present their QR to the camera.
 4. Review the student's name and attendance record. A second scan while they are
    already checked in is rejected, including concurrent duplicate requests.
-5. Select **Time Out** beside a student, or **Time Out All** to close every active record.
-6. Select **Stop and Download Report** to stop the camera and download the CSV.
+5. Select **Time out** beside a student, or **Time out all** to close every active record.
+6. Select **Stop scanner** when finished scanning, and **Download CSV** to export the report.
+   These are separate actions; downloading does not stop a running camera.
 7. Log out when finished, especially on a shared device.
 
 Stopping the scanner does **not** time students out. Use the time-out controls to
 close active records. Attendance persists across restarts, and the CSV contains
 all stored attendance history rather than only the current scanning session.
 The dashboard shows local browser times; records and audit events use UTC timestamps.
+Its simple table shows student, section, timestamps, duration, and actions. On small
+screens it prioritizes student, time-in, and time-out action; the CSV retains all fields.
 
 ## Account and QR maintenance
 
@@ -424,7 +466,9 @@ above for student registration. A Viewer-accessible CSV export is read directly
 without Google API keys or a paid API setup. Forms exports require
 `python fetch_students.py --google-forms`; a trusted canonical roster with
 `full_name,section,lrn,email` headers can still use `python fetch_students.py`.
-Imports are explicit operator actions, not automatic attendance or background polling.
+With the Sheet configured, the standard startup commands enable automatic pending
+registration, approved roster import, and QR generation. Manual import remains available.
+Registration never records attendance by itself.
 
 ### Email QR delivery
 
@@ -507,7 +551,8 @@ Never commit actual credentials.
 | `ATTENDANCE_TRUSTED_HOSTS` | Comma-separated exact application hostnames. |
 | `ATTENDANCE_SESSION_KEY` | Optional private override of the generated session key; at least 32 random characters. |
 | `ATTENDANCE_QR_KEY` | Optional private override; URL-safe base64 encoding of 32 random bytes. |
-| `STUDENT_SHEET_URL` | Google Sheets HTTPS CSV export accessible without sign-in; Forms imports require `--google-forms`. |
+| `STUDENT_SHEET_URL` | Link-accessible Google Forms response CSV; configuring it enables sync in the standard startup commands. |
+| `STUDENT_SYNC_INTERVAL` | Automatic polling interval, 10–3600 seconds; defaults to `30`. |
 | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` | Optional SMTP settings for explicit email delivery. |
 | `SMTP_PORT` | SMTP TLS port; defaults to `465`. |
 | `ATTENDANCE_WORKERS` | Worker count for `scripts/start.sh`; defaults to `2`. |
@@ -527,7 +572,8 @@ python -m pip check
 The core suite uses temporary SQLite storage and generated credentials, leaving
 the real roster untouched. It covers authentication, CSRF, QR validation/revocation,
 concurrent duplicates, attendance actions, audit records, imports, session
-invalidation, CSV protection, remote database TLS enforcement, and mocked SMTP.
+invalidation, CSV protection, remote database TLS enforcement, pending registration,
+worker locking/retries, QR generation, and mocked SMTP.
 
 If Node.js is installed, check the browser scripts with:
 
@@ -578,4 +624,6 @@ in `static/vendor/`; application Python versions are pinned in `requirements.loc
 | Roster rejected | Check the exact CSV headers, 12-digit LRNs, nonempty names/sections, and valid email addresses. |
 | Existing roster details unchanged | Import skips existing LRNs; it is not a roster update command. |
 | Remote PostgreSQL connection refused | Configure certificate-verified TLS and trusted root certificates. |
+| Sync does not update | Keep the standard server startup running with `STUDENT_SHEET_URL` configured, or run `python sync_worker.py` beside a directly started Gunicorn server. Check the dashboard sync status. |
+| Submission is pending | A teacher must check its `approved` Sheet checkbox before active enrollment and QR generation. |
 | Email delivery fails | Verify secure SMTP settings, provider app-password requirements, and network access. |

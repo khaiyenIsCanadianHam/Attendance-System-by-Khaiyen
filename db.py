@@ -76,6 +76,7 @@ def init_db():
                     "Legacy database detected. Back up the database, then run flask --app server migrate-legacy."
                 )
         for sql in [
+            "CREATE TABLE IF NOT EXISTS registration_requests (lrn TEXT NOT NULL, email TEXT NOT NULL, full_name TEXT NOT NULL, section TEXT NOT NULL, status TEXT NOT NULL, observed_at TEXT NOT NULL, PRIMARY KEY (lrn,email))",
             f"CREATE TABLE IF NOT EXISTS teachers (id {identity}, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL)",
             f"CREATE TABLE IF NOT EXISTS students (id {identity}, full_name TEXT NOT NULL, section TEXT NOT NULL, lrn TEXT UNIQUE NOT NULL, email TEXT NOT NULL, qr_nonce TEXT NOT NULL)",
             f"CREATE TABLE IF NOT EXISTS attendance (id {identity}, full_name TEXT NOT NULL, section TEXT NOT NULL, lrn TEXT NOT NULL REFERENCES students(lrn), time_in {timestamp_type} NOT NULL, time_out {timestamp_type})",
@@ -192,3 +193,22 @@ def migrate_legacy_database(timezone):
                 "ALTER TABLE attendance ADD CONSTRAINT attendance_student_fk FOREIGN KEY (lrn) REFERENCES students(lrn)"
             )
     init_db()
+
+
+def record_registration_requests(rows):
+    from datetime import datetime, timezone
+
+    observed = datetime.now(timezone.utc).isoformat()
+    with transaction() as cur:
+        for row in rows:
+            cur.execute(
+                "INSERT INTO registration_requests (lrn,email,full_name,section,status,observed_at) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (lrn,email) DO UPDATE SET full_name=excluded.full_name, section=excluded.section, status=excluded.status, observed_at=excluded.observed_at",
+                (
+                    row["lrn"],
+                    row["email"],
+                    row["full_name"],
+                    row["section"],
+                    row["status"],
+                    observed,
+                ),
+            )

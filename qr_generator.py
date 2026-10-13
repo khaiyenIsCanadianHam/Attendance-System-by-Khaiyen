@@ -1,4 +1,7 @@
 import secrets
+import hashlib
+import os
+import tempfile
 import qrcode
 from config import INSTANCE
 from db import get_all_students, transaction, validate_student
@@ -24,8 +27,21 @@ def generate_qr(student):
     )
     qr.add_data(token, optimize=0)
     qr.make(fit=True)
-    qr.make_image(fill_color="black", back_color="white").convert("RGB").save(path)
-    path.chmod(0o600)
+    with tempfile.NamedTemporaryFile(
+        dir=directory, suffix=".png", delete=False
+    ) as file:
+        temporary = file.name
+    try:
+        qr.make_image(fill_color="black", back_color="white").convert("RGB").save(
+            temporary
+        )
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    (directory / (student["lrn"] + ".revision")).write_text(
+        hashlib.sha256(token.encode()).hexdigest()
+    )
     return str(path)
 
 

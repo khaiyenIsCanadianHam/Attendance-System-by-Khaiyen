@@ -129,6 +129,31 @@ class PostgreSQLTests(unittest.TestCase):
             200,
         )
 
+    def test_pending_registration_then_approved_enrollment(self):
+        from fetch_students import import_csv
+
+        init_db()
+        self.seed()
+        text = "Email Address,full_name,section,lrn,approved\npending@example.test,Pending,A,012345678901,FALSE\n"
+        self.assertEqual(import_csv(text, google_forms=True, collect_pending=True), 0)
+        with transaction() as cur:
+            cur.execute("SELECT status FROM registration_requests")
+            self.assertEqual(cur.fetchone()[0], "pending")
+        self.assertEqual(
+            import_csv(
+                text.replace("FALSE", "TRUE"), google_forms=True, collect_pending=True
+            ),
+            1,
+        )
+        with transaction() as cur:
+            cur.execute("SELECT status FROM registration_requests")
+            self.assertEqual(cur.fetchone()[0], "approved")
+        self.assertEqual(len(get_all_students()), 2)
+        self.login()
+        response = self.client.get("/sync_status", base_url="https://localhost")
+        self.assertEqual(response.json["pending"], 0)
+        self.assertEqual(response.json["students"], 2)
+
     def test_legacy_migration_preserves_history_and_roster(self):
         self.legacy_schema()
         with self.assertRaisesRegex(RuntimeError, "Legacy database"):

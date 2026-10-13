@@ -323,6 +323,112 @@ class SystemTests(unittest.TestCase):
             import_csv(bad)
         self.assertEqual(len(get_all_students()), 3)
 
+    def test_forms_only_approved_responses_import(self):
+        text = (
+            "Timestamp,Email Address,full_name,section,lrn,approved\n"
+            "today,approved@example.test,Approved,A,012345678901,TRUE\n"
+            "today,invalid,Pending,B,bad-lrn,FALSE\n"
+            "today,pending@example.test,Pending,B,012345678902,\n"
+        )
+        self.assertEqual(import_csv(text, google_forms=True), 1)
+        students = {s["lrn"]: s for s in get_all_students()}
+        self.assertEqual(students["012345678901"]["email"], "approved@example.test")
+        self.assertNotIn("012345678902", students)
+        self.assertEqual(import_csv(text, google_forms=True), 0)
+
+    def test_forms_requires_teacher_approval_column(self):
+        text = "Timestamp,Email Address,full_name,section,lrn\ntoday,test@example.test,Student,A,012345678901\n"
+        with self.assertRaisesRegex(ValueError, "approved headers"):
+            import_csv(text, google_forms=True)
+        self.assertEqual(len(get_all_students()), 1)
+
+    def test_forms_uses_collected_email_instead_of_student_email_question(self):
+        text = "Email Address,email,full_name,section,lrn,approved\nverified@example.test,spoofed@example.test,Student,A,012345678901,TRUE\n"
+        self.assertEqual(import_csv(text, google_forms=True), 1)
+        student = next(s for s in get_all_students() if s["lrn"] == "012345678901")
+        self.assertEqual(student["email"], "verified@example.test")
+
+    def test_forms_invalid_approved_record_prevents_partial_import(self):
+        text = "Email Address,full_name,section,lrn,approved\nvalid@example.test,Valid,A,012345678901,TRUE\ninvalid,Invalid,A,012345678902,TRUE\n"
+        with self.assertRaises(ValueError):
+            import_csv(text, google_forms=True)
+        self.assertEqual(len(get_all_students()), 1)
+
+    def test_forms_rejects_conflicting_approved_identities(self):
+        text = "Email Address,full_name,section,lrn,approved\none@example.test,One,A,012345678901,TRUE\ntwo@example.test,Two,A,012345678901,TRUE\n"
+        with self.assertRaisesRegex(ValueError, "Conflicting"):
+            import_csv(text, google_forms=True)
+        self.assertEqual(len(get_all_students()), 1)
+
+    def test_forms_rejects_ambiguous_approval_and_duplicate_headers(self):
+        text = "Email Address,full_name,section,lrn,approved\nstudent@example.test,Student,A,012345678901,yes\n"
+        with self.assertRaisesRegex(ValueError, "Approval must"):
+            import_csv(text, google_forms=True)
+        duplicate = "Email Address,full_name,section,lrn,approved,Approved\n"
+        with self.assertRaisesRegex(ValueError, "duplicate headers"):
+            import_csv(duplicate, google_forms=True)
+
+    def test_shared_google_sheet_fetch_imports_approved_forms_rows(self):
+        from unittest.mock import patch, MagicMock
+        from fetch_students import run_sync
+
+        url = "https://docs.google.com/spreadsheets/d/example/export?format=csv&gid=0"
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {"Content-Type": "text/csv; charset=utf-8"}
+        response.iter_content.return_value = [
+            b"Email Address,full_name,section,lrn,approved\n",
+            b"verified@example.test,Student,A,012345678901,TRUE\n",
+        ]
+        with (
+            patch.dict(os.environ, {"STUDENT_SHEET_URL": url}),
+            patch("fetch_students.requests.get", return_value=response) as get,
+        ):
+            self.assertEqual(run_sync(google_forms=True), 1)
+            get.assert_called_once_with(url, stream=True, timeout=(10, 30))
+            response.raise_for_status.assert_called_once()
+
+    def test_shared_sheet_html_permission_page_is_rejected(self):
+        from unittest.mock import patch, MagicMock
+        from fetch_students import run_sync
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {"Content-Type": "text/html; charset=utf-8"}
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "STUDENT_SHEET_URL": "https://docs.google.com/spreadsheets/d/example/export?format=csv"
+                },
+            ),
+            patch("fetch_students.requests.get", return_value=response),
+        ):
+            with self.assertRaisesRegex(ValueError, "HTML instead of CSV"):
+                run_sync(google_forms=True)
+        self.assertEqual(len(get_all_students()), 1)
+
+    def test_shared_sheet_download_size_limit(self):
+        from unittest.mock import patch, MagicMock
+        from fetch_students import run_sync
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {"Content-Type": "text/csv"}
+        response.iter_content.return_value = [b"x" * 1_000_001, b"x" * 1_000_001]
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "STUDENT_SHEET_URL": "https://docs.google.com/spreadsheets/d/example/export?format=csv"
+                },
+            ),
+            patch("fetch_students.requests.get", return_value=response),
+        ):
+            with self.assertRaisesRegex(ValueError, "Roster too large"):
+                run_sync(google_forms=True)
+        self.assertEqual(len(get_all_students()), 1)
+
     def test_qr_image_and_private_keys(self):
         path = Path(generate_qr(self.student))
         self.assertTrue(path.read_bytes().startswith(b"\x89PNG"))

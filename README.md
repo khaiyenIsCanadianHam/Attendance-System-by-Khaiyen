@@ -10,6 +10,7 @@ default; PostgreSQL is available for deployments that need a separate database.
 - [Features](#features)
 - [Requirements](#requirements)
 - [Step-by-step setup](#step-by-step-setup)
+- [Google Forms and Google Sheets setup](#google-forms-and-google-sheets-setup)
 - [Daily use](#daily-use)
 - [Account and QR maintenance](#account-and-qr-maintenance)
 - [Optional integrations](#optional-integrations)
@@ -23,6 +24,7 @@ default; PostgreSQL is available for deployments that need a separate database.
 | Feature | What it does |
 | --- | --- |
 | Teacher login | Restricts the dashboard, attendance actions, and reports to provisioned teachers. |
+| Google Forms registration | Collects student details into Google Sheets, with a reusable form template and teacher approval before import. |
 | Roster import | Imports approved student records from CSV, validates all rows first, and skips existing LRNs. |
 | QR generation | Creates a private QR image for each student without embedding their personal details. |
 | Camera scanning | Checks a student in after the server verifies their QR credential against the roster. |
@@ -120,7 +122,13 @@ put the password in command-line arguments or source files.
 
 ### 6. Prepare and import the roster
 
-Save an approved UTF-8 CSV file, for example `roster.csv`, with these exact headers:
+For student self-registration, follow [Google Forms and Google Sheets setup](#google-forms-and-google-sheets-setup).
+The form sends responses to Google Sheets, and the program imports approved rows
+from its shared CSV export without Google API keys. Complete that setup before
+continuing to step 7.
+
+Alternatively, save an operator-approved UTF-8 CSV file, for example `roster.csv`,
+with these exact headers:
 
 ```csv
 full_name,section,lrn,email
@@ -183,6 +191,166 @@ before scanning their QR.
 On Linux/macOS, `bash scripts/setup.sh` is a shortcut for dependency installation
 and database initialization. `ATTENDANCE_LOCAL_HTTP=1 bash scripts/start.sh`
 starts the local server after setup.
+
+## Google Forms and Google Sheets setup
+
+The collection flow is:
+
+**Student submits Google Form → response arrives in Google Sheets → teacher verifies
+and approves it → program imports approved rows → operator generates/distributes QR codes.**
+
+Form submissions register student details; they do not record attendance or create
+teacher accounts. Google Forms and the Sheet CSV export require no paid API setup,
+API key, service account, or OAuth configuration in this application. You still need
+a Google account to own the form and spreadsheet.
+
+### 1. Create your registration form from the template
+
+The repository includes:
+
+- [Apps Script form template](templates/google-forms/create-form.gs), which creates
+  the form and links it to a new response spreadsheet in your Google account.
+- [Example response CSV](templates/google-forms/responses-example.csv), showing the
+  exact response headers and teacher approval column using fictional data.
+
+Open Google Apps Script, create a new standalone project, and paste the contents
+of `create-form.gs` into its script editor. Change the `sections` array to your
+actual school sections. Save, select `createAttendanceRegistrationForm`, and run
+it **once**. Review Google's permissions prompt and authorize your own project.
+The execution log gives you the form editor, responder link, and spreadsheet URL.
+Each run creates another form/spreadsheet, so keep the links from the first run.
+This template has not been executed against your Google account by this assistant.
+
+If you prefer to build the form manually, use these exact question titles:
+
+| Question | Type | Required / validation |
+| --- | --- | --- |
+| `full_name` | Short answer | Required; official name from the school roster. |
+| `section` | Dropdown | Required; use your school's actual section choices. |
+| `lrn` | Short answer | Required; regular-expression match `^[0-9]{12}$`. |
+
+Do **not** add an `approved` form question. Approval is controlled by teachers in
+Google Sheets. Do not ask students to upload credentials or private documents.
+
+### 2. Configure form access and collected email
+
+In the form's **Settings → Responses**, enable email collection and select
+**Verified** if available, so the collected address belongs to the signed-in Google
+account. The template enables email collection, but you must check its verification
+mode in the Forms interface. Do not use a separate student-entered `email` question
+as identity verification; the importer uses the collected **Email Address** column.
+
+Enable **Limit to 1 response**, disable response editing, and keep response-summary
+sharing disabled. These settings require respondents to sign in. If your school
+uses Google Workspace, restrict respondents to school accounts when appropriate.
+A Google account and one-response limit do not prove ownership of an LRN; teacher
+verification is still required. Review the form before publishing it or distributing
+its responder link.
+
+### 3. Link responses to Google Sheets
+
+The script links the spreadsheet automatically. For a manually created form, open
+**Responses**, choose the Sheets icon / **Link to Sheets**, and create a spreadsheet.
+Submit one test response and confirm the response tab has these columns:
+
+```text
+Timestamp | Email Address | full_name | section | lrn
+```
+
+If Google creates a localized email header, rename that column to **Email Address**
+in your export sheet. Keep the question-derived headers exactly as shown. Ensure
+LRNs stay as text with all 12 digits, including leading zeros. Before approving,
+remove test responses so they do not enter the real roster.
+
+### 4. Add teacher-only approval
+
+In the first empty column of the response tab, add the header `approved`. Select
+its data cells and use **Insert → Checkbox**, with the default values **TRUE/FALSE**.
+Leave new submissions unchecked. Teachers should verify the name, section, LRN,
+and collected email against the school roster before checking a row.
+
+For incoming rows, ensure their approval cell is blank or an unchecked checkbox.
+Blank/FALSE rows are ignored. Only TRUE rows are eligible. Resolve duplicate LRNs
+before approval; the importer refuses conflicting approved identities within one
+export. Previously imported LRNs are skipped and are not automatically updated.
+
+### 5. Allow read-only CSV access without Google APIs
+
+You requested link-accessible spreadsheet data. Open the spreadsheet's **Share**
+dialog, set **General access → Anyone with the link**, and select **Viewer**.
+Keep editing access restricted to authorized teachers/operators. Allow CSV download
+for viewers; the program cannot import a sheet whose owner disables downloading.
+School Workspace policies may prohibit external link access—respect those policies.
+
+**Privacy:** anyone who obtains this link can read and download the sheet's names,
+LRNs, and email addresses. The app cannot make a link-shared sheet private. Avoid
+posting its link in the student form or publicly in the repository. A safer option
+is to keep raw responses private and copy only approved records, with these same
+headers and TRUE approvals, into a separate link-shared spreadsheet. Sharing applies
+to the whole spreadsheet; a separate tab in the response spreadsheet is not a privacy
+boundary. Local CSV download/import is also available if link-sharing is unsuitable.
+
+Use a CSV export URL in this form:
+
+```text
+https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/export?format=csv&gid=TAB_GID
+```
+
+Get `SPREADSHEET_ID` from the spreadsheet URL between `/d/` and `/edit`. Get
+`TAB_GID` from the `gid` parameter for the exact response/approved-roster tab;
+`0` is common but is not guaranteed. Do not use the regular `/edit` page as the
+CSV URL. There is no need to use **Publish to web**. Verify the export works in a
+signed-out/private browser window: it must download CSV rather than show a login
+page or an HTML permissions message.
+
+### 6. Configure and import the shared spreadsheet
+
+With the virtual environment active, set the export URL **on your own machine**.
+Replace both placeholders before running:
+
+**Linux/macOS:**
+
+```bash
+export STUDENT_SHEET_URL='https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/export?format=csv&gid=TAB_GID'
+python fetch_students.py --google-forms
+```
+
+**Windows PowerShell:**
+
+```powershell
+$env:STUDENT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/export?format=csv&gid=TAB_GID'
+python fetch_students.py --google-forms
+```
+
+The program downloads the CSV using HTTPS, reads the collected Email Address,
+ignores unapproved responses, validates all approved rows, and inserts new students.
+The `--google-forms` flag is required for the Forms headers and approval handling.
+A missing approval column or an ambiguous approval value causes import to refuse.
+No QR images or emails are sent during import.
+
+If your hosting environment restricts outbound access, allow `docs.google.com` and
+the Google CSV download redirect hosts it actually uses (commonly under
+`*.googleusercontent.com`). Keep HTTPS certificate verification enabled. No live
+spreadsheet URL was supplied, so access to your sheet has not been tested here.
+
+To use a downloaded response CSV instead, run:
+
+```bash
+python fetch_students.py responses.csv --google-forms
+```
+
+### 7. Issue QR codes and repeat when new students register
+
+```bash
+python qr_generator.py
+```
+
+Distribute the private QR images from `.instance/qrcodes/`, or configure SMTP and
+explicitly run `python app.py --send-email`. Re-run the Forms import after teachers
+approve new submissions, then generate their QR codes. The web server does not
+poll the Sheet automatically. Unchecking a previously imported row does not delete
+a student or revoke an issued QR; handle revocation explicitly with
+`python qr_generator.py --rotate LRN` when a code must be replaced.
 
 ## Daily use
 
@@ -249,18 +417,14 @@ certificate. Restrict database access and role privileges. The source contains
 no default database password. Use the migration procedure below for an existing
 installation with the original schema.
 
-### Google Sheets roster import
+### Google Forms / Google Sheets
 
-Set `STUDENT_SHEET_URL` to the HTTPS CSV export of an **operator-controlled Google
-Sheet**, then explicitly run:
-
-```bash
-python fetch_students.py
-```
-
-The URL must use `docs.google.com`. Review student submissions before approving
-them for the roster. There is no background polling or automatic trust in the old
-public form. Local CSV import works without Google Sheets access.
+Use the complete [Google Forms and Google Sheets setup](#google-forms-and-google-sheets-setup)
+above for student registration. A Viewer-accessible CSV export is read directly
+without Google API keys or a paid API setup. Forms exports require
+`python fetch_students.py --google-forms`; a trusted canonical roster with
+`full_name,section,lrn,email` headers can still use `python fetch_students.py`.
+Imports are explicit operator actions, not automatic attendance or background polling.
 
 ### Email QR delivery
 
@@ -343,7 +507,7 @@ Never commit actual credentials.
 | `ATTENDANCE_TRUSTED_HOSTS` | Comma-separated exact application hostnames. |
 | `ATTENDANCE_SESSION_KEY` | Optional private override of the generated session key; at least 32 random characters. |
 | `ATTENDANCE_QR_KEY` | Optional private override; URL-safe base64 encoding of 32 random bytes. |
-| `STUDENT_SHEET_URL` | Approved Google Sheets HTTPS CSV export; optional. |
+| `STUDENT_SHEET_URL` | Google Sheets HTTPS CSV export accessible without sign-in; Forms imports require `--google-forms`. |
 | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` | Optional SMTP settings for explicit email delivery. |
 | `SMTP_PORT` | SMTP TLS port; defaults to `465`. |
 | `ATTENDANCE_WORKERS` | Worker count for `scripts/start.sh`; defaults to `2`. |
@@ -409,6 +573,8 @@ in `static/vendor/`; application Python versions are pinned in `requirements.loc
 | Login does not persist over local HTTP | Use `ATTENDANCE_LOCAL_HTTP=1` only for local development. Production must use HTTPS. |
 | Invalid or revoked QR | Issue the current QR image; original archive-era codes are intentionally rejected. |
 | Student already checked in | Close the active record with Time Out before scanning another check-in. |
+| Forms import rejected | Use `--google-forms`, the collected `Email Address` column, and a teacher-only `approved` column containing TRUE/FALSE checkboxes. |
+| Shared Sheet download fails | Use the CSV export URL for the correct tab, Viewer link access, and allowed downloading; test the link signed out. |
 | Roster rejected | Check the exact CSV headers, 12-digit LRNs, nonempty names/sections, and valid email addresses. |
 | Existing roster details unchanged | Import skips existing LRNs; it is not a roster update command. |
 | Remote PostgreSQL connection refused | Configure certificate-verified TLS and trusted root certificates. |

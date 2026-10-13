@@ -1,0 +1,3 @@
+Timestamp,Email Address,full_name,section,lrn,approved
+2026-10-13 08:00:00,approved@example.test,Example Approved Student,Section A,012345678901,TRUE
+2026-10-13 08:05:00,pending@example.test,Example Pending Student,Section B,012345678902,FALSE

@@ -1,6 +1,6 @@
-# Hanami
+# Attendance System by Khaiyen
 
-Hanami is a teacher-operated web application for recording student attendance with QR codes.
+Attendance System by Khaiyen is a teacher-operated web application for recording student attendance with QR codes.
 Teachers can check students in, record time-outs, monitor active attendance, and
 export attendance reports. The application uses Flask and runs with SQLite by
 default; PostgreSQL is available for deployments that need a separate database.
